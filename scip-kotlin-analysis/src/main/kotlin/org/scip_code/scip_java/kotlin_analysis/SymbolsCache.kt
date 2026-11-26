@@ -10,6 +10,7 @@ import org.jetbrains.kotlin.analysis.api.symbols.KaConstructorSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaFunctionSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaNamedFunctionSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaPackageSymbol
+import org.jetbrains.kotlin.analysis.api.symbols.KaSamConstructorSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbolOrigin
 import org.jetbrains.kotlin.analysis.api.symbols.KaTypeAliasSymbol
@@ -203,6 +204,12 @@ class SymbolsCache(private val session: KaSession) {
     /** The SCIP symbol for the target of a resolved reference. */
     @OptIn(KaExperimentalApi::class)
     fun symbolForReference(session: KaSession, target: KaSymbol): Symbol {
+        // A SAM conversion has no authored constructor. Navigate to its interface,
+        // while leaving real constructors and same-named functions distinct.
+        if (target is KaSamConstructorSymbol) {
+            val interfaceSymbol = (target.returnType as? KaClassType)?.symbol
+            if (interfaceSymbol != null) return symbolForReference(session, interfaceSymbol)
+        }
         // A constructor call through a type alias (`HashMap()`) references the aliased
         // class's constructor, like javac and scip-kotlinc.
         if (target is KaConstructorSymbol) {
