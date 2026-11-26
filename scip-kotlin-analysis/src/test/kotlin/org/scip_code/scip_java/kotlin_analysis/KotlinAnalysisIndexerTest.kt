@@ -407,6 +407,112 @@ class KotlinAnalysisIndexerTest {
         }
     }
 
+    @Test
+    fun `resolves SAM conversions, Java properties and value class methods`(@TempDir path: Path) {
+        val sourceroot = path.toRealPath()
+        val src = Files.createDirectories(sourceroot.resolve("src"))
+        Files.writeString(
+            src.resolve("JavaBean.java"),
+            """
+            package sample;
+
+            public class JavaBean {
+                public int getCount() { return 0; }
+                public void setCount(int count) {}
+                public int getInherited() { return 0; }
+            }
+            """
+                .trimIndent(),
+        )
+        Files.writeString(
+            src.resolve("Declarations.kt"),
+            """
+            package sample
+
+            fun interface Predicate<T> { fun check(value: T): Boolean }
+            fun Predicate(): String = "overload"
+            class Ordinary
+            @JvmInline value class EntityId(val value: Int)
+            class Bean : JavaBean() {
+                override fun getCount(): Int = 1
+                override fun setCount(count: Int) {}
+                var ordinary: Int = 1
+            }
+            """
+                .trimIndent(),
+        )
+        val code =
+            """
+            package sample
+
+            fun use(bean: Bean, id: EntityId) {
+                val predicate = Predicate<Int> { true }
+                Predicate()
+                predicate.check(1)
+                Ordinary()
+                val count = bean.count
+                bean.count = 2
+                bean.count++
+                val inherited = bean.inherited
+                bean.ordinary = 3
+                id.equals(EntityId(count))
+            }
+            """
+                .trimIndent()
+        Files.writeString(src.resolve("Use.kt"), code)
+        val documents =
+            KotlinAnalysisIndexer(
+                    sourceroot = sourceroot,
+                    targetroot = sourceroot.resolve("scip-targetroot"),
+                    sourceRoots = listOf(src),
+                    classpath = listOf(kotlinStdlibJar()),
+                )
+                .run()
+                .associateBy { it.relativePath }
+        val declarations = documents.getValue("src/Declarations.kt")
+        val consumer = documents.getValue("src/Use.kt")
+
+        val expected =
+            listOf(
+                Triple("Predicate<Int>", "Predicate", setOf("sample/Predicate#")),
+                Triple("Predicate()", "Predicate", setOf("sample/Predicate().")),
+                Triple("predicate.check", "check", setOf("sample/Predicate#check().")),
+                Triple("Ordinary()", "Ordinary", setOf("sample/Ordinary#`<init>`().")),
+                Triple("val count", "count", setOf("sample/Bean#getCount().")),
+                Triple("bean.count = 2", "count", setOf("sample/Bean#setCount().")),
+                Triple(
+                    "bean.count++",
+                    "count",
+                    setOf("sample/Bean#getCount().", "sample/Bean#setCount()."),
+                ),
+                Triple("bean.inherited", "inherited", setOf("sample/JavaBean#getInherited().")),
+                Triple("id.equals", "equals", setOf("sample/EntityId#equals().")),
+            )
+        for ((lineText, token, symbols) in expected) {
+            val line = code.lines().indexOfFirst { lineText in it }
+            val sourceLine = code.lines()[line]
+            val start = sourceLine.lastIndexOf(token)
+            val actual =
+                consumer.occurrencesList
+                    .filter {
+                        it.symbolRoles and SymbolRole.Definition.number == 0 &&
+                            it.singleLineRange.line == line &&
+                            it.singleLineRange.startCharacter == start
+                    }
+                    .map { it.symbol }
+                    .toSet()
+            assertEquals(symbols, actual, lineText)
+        }
+        assertContainsAll(
+            definitions(declarations),
+            "sample/Predicate#",
+            "sample/Bean#getCount().",
+            "sample/Bean#setCount().",
+            "sample/EntityId#equals().",
+        )
+        assertContains(references(consumer), "sample/Bean#ordinary.")
+    }
+
     private fun compileScip(path: Path, code: String): Document {
         val sourceroot = path.toRealPath()
         val source = Files.createDirectories(sourceroot.resolve("src")).resolve("Test.kt")

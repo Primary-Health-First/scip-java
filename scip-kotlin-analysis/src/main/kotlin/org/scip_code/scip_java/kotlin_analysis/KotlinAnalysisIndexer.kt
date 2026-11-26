@@ -19,11 +19,13 @@ import org.jetbrains.kotlin.analysis.api.symbols.KaFunctionSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaNamedFunctionSymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaPropertySymbol
 import org.jetbrains.kotlin.analysis.api.symbols.KaSymbolOrigin
+import org.jetbrains.kotlin.analysis.api.symbols.KaSyntheticJavaPropertySymbol
 import org.jetbrains.kotlin.analysis.api.types.KaClassType
 import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtLibraryModule
 import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtSdkModule
 import org.jetbrains.kotlin.analysis.project.structure.builder.buildKtSourceModule
 import org.jetbrains.kotlin.idea.references.mainReference
+import org.jetbrains.kotlin.idea.references.readWriteAccess
 import org.jetbrains.kotlin.lexer.KtTokens
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
@@ -235,6 +237,19 @@ class KotlinAnalysisIndexer(
                 return
             }
 
+            if (target is KaSyntheticJavaPropertySymbol) {
+                val access = expression.readWriteAccess(true)
+                if (access.isRead) {
+                    addReference(cache.symbolForReference(session, target.javaGetterSymbol), range)
+                }
+                if (access.isWrite) {
+                    target.javaSetterSymbol?.let {
+                        addReference(cache.symbolForReference(session, it), range)
+                    }
+                }
+                return
+            }
+
             // Property references fan out to the property and its accessors
             // (`banana` → `Class#banana.`, `Class#getBanana().`, `Class#setBanana().`).
             if (target is KaPropertySymbol) {
@@ -340,7 +355,9 @@ class KotlinAnalysisIndexer(
                         documentation = null,
                     )
                 }
-                emitDataClassObjectMethods(declaration, range)
+            }
+            if (declaration is KtClass && (declaration.isData() || declaration.isValue())) {
+                emitGeneratedObjectMethods(declaration, range)
             }
         }
 
@@ -367,7 +384,7 @@ class KotlinAnalysisIndexer(
         }
 
         /** Emit only methods Kotlin generates, not explicit or inherited final implementations. */
-        private fun emitDataClassObjectMethods(declaration: KtClass, range: TextRange) {
+        private fun emitGeneratedObjectMethods(declaration: KtClass, range: TextRange) {
             with(session) {
                 val owner = declaration.symbol as? KaClassSymbol ?: return@with
                 val scope = owner.memberScope
